@@ -1,6 +1,10 @@
 """
 RESTful view classes for presenting Deis API objects.
 """
+import etcd
+import logging
+import requests
+
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.contrib.auth.models import User
@@ -15,6 +19,9 @@ from rest_framework.viewsets import GenericViewSet
 from rest_framework.authtoken.models import Token
 
 from api import authentication, models, permissions, serializers, viewsets
+
+
+logger = logging.getLogger(__name__)
 
 
 class UserRegistrationViewSet(GenericViewSet,
@@ -162,6 +169,7 @@ class AppViewSet(BaseDeisViewSet):
     """A viewset for interacting with App objects."""
     model = models.App
     serializer_class = serializers.AppSerializer
+    etcd_client = None
 
     def get_queryset(self, *args, **kwargs):
         return self.model.objects.all(*args, **kwargs)
@@ -202,8 +210,27 @@ class AppViewSet(BaseDeisViewSet):
             return Response({'detail': str(e)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
+
+    def _get_etcd_client(self):
+        if self.etcd_client is None:
+            try:
+                self.etcd_client = etcd.Client(host=settings.ETCD_HOST, port=int(settings.ETCD_PORT))
+            except etcd.EtcdException:
+                logger.log(logging.WARNING, 'Cannot synchronize with etcd cluster')
+        return self.etcd_client
+
+    def _get_logging_mode(self):
+        return self._get_etcd_client().get('/deis/logs/handlertype').value
+
+
     def logs(self, request, **kwargs):
         app = self.get_object()
+        if self._get_logging_mode() == 'standard':
+            return self._get_logs_from_fs(request, app)
+        else:
+            return self._get_logs_from_logger(request, app)
+
+    def _get_logs_from_fs(self, request, app):
         try:
             return Response(app.logs(request.query_params.get('log_lines',
                                      str(settings.LOG_LINES))),
@@ -212,6 +239,14 @@ class AppViewSet(BaseDeisViewSet):
             return Response("No logs for {}".format(app.id),
                             status=status.HTTP_204_NO_CONTENT,
                             content_type='text/plain')
+
+    def _get_logs_from_logger(self, request, app):
+        host = self._get_etcd_client().get('/deis/logs/host').value
+        r = requests.get('http://{}:{}/{}/'.format(host, 8088, app.id))
+        log_lines = int(request.query_params.get('log_lines', str(settings.LOG_LINES))) + 1
+        content = r.content.split('\n')[log_lines * -1:]
+        return Response('\n'.join(content), status=status.HTTP_200_OK, content_type='text/plain')
+
 
     def run(self, request, **kwargs):
         app = self.get_object()
