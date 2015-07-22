@@ -210,18 +210,20 @@ class AppViewSet(BaseDeisViewSet):
             return Response({'detail': str(e)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
-
     def _get_etcd_client(self):
         if self.etcd_client is None:
             try:
-                self.etcd_client = etcd.Client(host=settings.ETCD_HOST, port=int(settings.ETCD_PORT))
+                self.etcd_client = etcd.Client(host=settings.ETCD_HOST,
+                                               port=int(settings.ETCD_PORT))
             except etcd.EtcdException:
                 logger.log(logging.WARNING, 'Cannot synchronize with etcd cluster')
         return self.etcd_client
 
     def _get_logging_mode(self):
-        return self._get_etcd_client().get('/deis/logs/handlertype').value
-
+        try:
+            return self._get_etcd_client().get('/deis/logs/handlertype').value
+        except KeyError:
+            return 'standard'
 
     def logs(self, request, **kwargs):
         app = self.get_object()
@@ -242,11 +244,17 @@ class AppViewSet(BaseDeisViewSet):
 
     def _get_logs_from_logger(self, request, app):
         host = self._get_etcd_client().get('/deis/logs/host').value
-        r = requests.get('http://{}:{}/{}/'.format(host, 8088, app.id))
-        log_lines = int(request.query_params.get('log_lines', str(settings.LOG_LINES))) + 1
-        content = r.content.split('\n')[log_lines * -1:]
-        return Response('\n'.join(content), status=status.HTTP_200_OK, content_type='text/plain')
-
+        try:
+            r = requests.get('http://{}:{}/{}/'.format(host, 8088, app.id))
+            log_lines = int(request.query_params.get('log_lines', str(settings.LOG_LINES))) + 1
+            content = r.content.split('\n')[log_lines * -1:]
+            return Response('\n'.join(content),
+                            status=status.HTTP_200_OK,
+                            content_type='text/plain')
+        except Exception as e:
+            return Response('Unable to get logs due error: {}'.format(e),
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            content_type='text/plain')
 
     def run(self, request, **kwargs):
         app = self.get_object()
