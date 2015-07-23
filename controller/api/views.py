@@ -224,6 +224,8 @@ class AppViewSet(BaseDeisViewSet):
             return self._get_etcd_client().get('/deis/logs/handlertype').value
         except KeyError:
             return 'standard'
+        except etcd.EtcdException:
+            return 'standard'
 
     def logs(self, request, **kwargs):
         app = self.get_object()
