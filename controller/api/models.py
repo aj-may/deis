@@ -175,6 +175,8 @@ class App(UuidAuditedModel):
                                       validate_reserved_names])
     structure = JSONField(default={}, blank=True, validators=[validate_app_structure])
 
+    _etcd_client = None
+
     class Meta:
         permissions = (('use_app', 'Can use app'),)
 
@@ -216,6 +218,17 @@ class App(UuidAuditedModel):
             return '' if container_type == 'cmd' else 'start {}'.format(container_type)
 
     def log(self, message):
+        if self._get_logging_mode() == 'standard':
+            self.log_to_fs(message)
+        else:
+            self.log_to_logger(message)
+
+    @staticmethod
+    def format_log_message(message):
+        return "{} deis[api]: {}\n".format(
+            time.strftime(settings.DEIS_DATETIME_FORMAT), message)
+
+    def log_to_fs(self, message):
         """Logs a message to the application's log file.
 
         This is a workaround for how Django interacts with Python's logging module. Each app
@@ -224,9 +237,19 @@ class App(UuidAuditedModel):
         existing logging configurations.
         """
         with open(os.path.join(settings.DEIS_LOG_DIR, self.id + '.log'), 'a') as f:
-            msg = "{} deis[api]: {}\n".format(time.strftime(settings.DEIS_DATETIME_FORMAT),
-                                              message)
-            f.write(msg.encode('utf-8'))
+            f.write(self.format_log_message(message).encode('utf-8'))
+
+    def log_to_logger(self, message):
+        try:
+            host = self._get_etcd_client().get('/deis/logs/host').value
+            url = 'http://{}:{}/{}/'.format(host,
+                                            8088,
+                                            self.id)
+            requests.post(url,
+                          data={'message': self.format_log_message(message)})
+        except Exception as e:
+            logger.error(
+                'Unable to send logs to logger due error: {}'.format(e))
 
     def create(self, *args, **kwargs):
         """Create a new application with an initial config and release"""
@@ -518,13 +541,46 @@ class App(UuidAuditedModel):
 
         self.scale(user, structure)
 
-    def logs(self, log_lines=str(settings.LOG_LINES)):
+    def _get_etcd_client(self):
+        if self._etcd_client is None:
+            try:
+                self._etcd_client = etcd.Client(host=settings.ETCD_HOST,
+                                                port=int(settings.ETCD_PORT))
+            except etcd.EtcdException:
+                logger.log(logging.WARNING,
+                           'Cannot synchronize with etcd cluster')
+        return self._etcd_client
+
+    def _get_logging_mode(self):
+        try:
+            return self._get_etcd_client().get('/deis/logs/handlertype').value
+        except KeyError:
+            return 'standard'
+        except etcd.EtcdException:
+            return 'standard'
+
+    def logs_from_fs(self, log_lines):
         """Return aggregated log data for this application."""
         path = os.path.join(settings.DEIS_LOG_DIR, self.id + '.log')
         if not os.path.exists(path):
             raise EnvironmentError('Could not locate logs')
         data = subprocess.check_output(['tail', '-n', log_lines, path])
         return data
+
+    def logs(self, log_lines=str(settings.LOG_LINES)):
+        if self._get_logging_mode() == 'standard':
+            return self.logs_from_fs(log_lines)
+        else:
+            return self._get_logs_from_logger(log_lines)
+
+    def _get_logs_from_logger(self, log_lines):
+        try:
+            host = self._get_etcd_client().get('/deis/logs/host').value
+            url = 'http://{}:{}/{}/{}/'.format(host, 8088, self.id, log_lines)
+            r = requests.get(url)
+            return r.content
+        except Exception as e:
+            return 'Unable to get logs due error: {}'.format(e)
 
     def run(self, user, command):
         """Run a one-off command in an ephemeral app container."""
