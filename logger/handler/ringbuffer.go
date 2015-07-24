@@ -1,4 +1,4 @@
-package handlers
+package handler
 
 import (
 	"container/ring"
@@ -12,19 +12,23 @@ import (
 	"github.com/deis/deis/logger/syslog"
 )
 
-var projectBuffer = make(map[string]*ring.Ring)
+var logStorage = make(map[string]*ring.Ring)
 var ringBufferSize int
 
-func addToBuffer(name string, message string) {
-	currentRing, ok := projectBuffer[name]
+var regexpForPost = regexp.MustCompile(`^/([-a-z0-9]+)/.*`)
+var regexpForGet = regexp.MustCompile(`^/([-a-z0-9]+)/([0-9]+)/.*`)
+
+// Add log message to main map with ring byffers by project name
+func addToStorage(name string, message string) {
+	currentRing, ok := logStorage[name]
 	if !ok {
 		r := ring.New(ringBufferSize)
 		r.Value = message
-		projectBuffer[name] = r
+		logStorage[name] = r
 	} else {
 		r := currentRing.Next()
 		r.Value = message
-		projectBuffer[name] = r
+		logStorage[name] = r
 	}
 }
 
@@ -39,6 +43,7 @@ func RingBufferHandler(bufferSize int, webServicePort int) *Handler {
 	return &h
 }
 
+// Main loop for this handler, each log line will be sended to drain (if DrainURI specified) and copied to log storage
 func (h *Handler) ringBufferLoop() {
 	for {
 		m := h.Get()
@@ -48,25 +53,25 @@ func (h *Handler) ringBufferLoop() {
 		if h.DrainURI != "" {
 			drain.SendToDrain(m.String(), h.DrainURI)
 		}
-		err := writeToBuffer(m)
-		if err != nil {
+		if err := writeToStorage(m); err != nil {
 			log.Println(err)
 		}
 	}
 	h.End()
 }
-
-func writeToBuffer(m syslog.SyslogMessage) error {
+// Tring to get application name from message and write log line to log storage
+func writeToStorage(m syslog.SyslogMessage) error {
 	appName, err := getProjectName(m.String())
 	if err != nil {
 		return err
 	}
-	addToBuffer(appName, m.String())
+	addToStorage(appName, m.String())
 	return nil
 }
 
-func getFromBuffer(name string, lines int) (string, error) {
-	currentRing, ok := projectBuffer[name]
+// Get specific amount of log lines for application name from main map with ring buffers
+func getFromStorage(name string, lines int) (string, error) {
+	currentRing, ok := logStorage[name]
 	if !ok {
 		return "", fmt.Errorf("Could not find logs for project '%s'", name)
 	}
@@ -83,11 +88,11 @@ func getFromBuffer(name string, lines int) (string, error) {
 	return data, nil
 }
 
+// Only one http handler which process requests
 func httpHandler(w http.ResponseWriter, r *http.Request) {
 
 	if r.Method == "POST" {
-		regex := regexp.MustCompile(`^/([-a-z0-9]+)/.*`)
-		match := regex.FindStringSubmatch(r.RequestURI)
+		match := regexpForPost.FindStringSubmatch(r.RequestURI)
 
 		if match == nil {
 			fmt.Fprintf(w, "Could not get application name from url: %s", r.RequestURI)
@@ -100,12 +105,11 @@ func httpHandler(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprintln(w, "Could not read from post request, no 'message' param in POST")
 			return
 		}
-		addToBuffer(match[1], value[0])
+		addToStorage(match[1], value[0])
 		return
 	}
 
-	regex := regexp.MustCompile(`^/([-a-z0-9]+)/([0-9]+)/.*`)
-	match := regex.FindStringSubmatch(r.RequestURI)
+	match := regexpForGet.FindStringSubmatch(r.RequestURI)
 
 	if match == nil {
 		fmt.Fprintf(w, "Could not get application name from url: %s", r.RequestURI)
@@ -117,7 +121,7 @@ func httpHandler(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, "Unable to get log lines parameter from request")
 		return
 	}
-	data, err := getFromBuffer(match[1], log_lines)
+	data, err := getFromStorage(match[1], log_lines)
 	if err != nil {
 		fmt.Fprintln(w, err)
 	} else {
@@ -125,6 +129,7 @@ func httpHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// Start web service which serve controller request for get and post logs
 func startWebService(port int) {
 	http.HandleFunc("/", httpHandler)
 	err := http.ListenAndServe(fmt.Sprintf(":%d", port), nil)

@@ -5,7 +5,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/deis/deis/logger/handlers"
+	"github.com/deis/deis/logger/handler"
 	"github.com/deis/deis/logger/syslog"
 )
 
@@ -26,13 +26,13 @@ func Listen(exitChan, cleanupDone chan bool, drainChan chan string, bindAddr str
 	}
 	// Create a server with one handler and run one listen goroutine
 	s := syslog.NewServer()
-	var h *handlers.Handler
+	var h *handler.Handler
 	if HandlerType == "standard" {
 		fmt.Println("Using standard handler for syslog")
-		h = handlers.StandardHandler(LogRoot)
+		h = handler.StandardHandler(LogRoot)
 	} else {
 		fmt.Println("Using ring buffer handler for syslog")
-		h = handlers.RingBufferHandler(RingBufferSize, WebServicePort)
+		h = handler.RingBufferHandler(RingBufferSize, WebServicePort)
 	}
 	s.AddHandler(h)
 	s.Listen(bindAddr)
