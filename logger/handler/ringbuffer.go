@@ -13,13 +13,15 @@ import (
 	"github.com/deis/deis/logger/syslog"
 )
 
-var logStorage = make(map[string]*ring.Ring)
-var ringBufferSize int
+var (
+	logStorage = make(map[string]*ring.Ring)
+	ringBufferSize int
 
-var regexpForPost = regexp.MustCompile(`^/([-a-z0-9]+)/.*`)
-var regexpForGet = regexp.MustCompile(`^/([-a-z0-9]+)/([0-9]+)/.*`)
+	regexpForPost = regexp.MustCompile(`^/([-a-z0-9]+)/.*`)
+	regexpForGet = regexp.MustCompile(`^/([-a-z0-9]+)/([0-9]+)/.*`)
 
-var mu sync.Mutex
+	mu sync.Mutex
+)
 
 // Add log message to main map with ring byffers by project name
 func addToStorage(name string, message string) {
@@ -30,20 +32,20 @@ func addToStorage(name string, message string) {
 		r := ring.New(ringBufferSize)
 		r.Value = message
 		logStorage[name] = r
-	} else {
-		r := currentRing.Next()
-		r.Value = message
-		logStorage[name] = r
+		return
 	}
+	r := currentRing.Next()
+	r.Value = message
+	logStorage[name] = r
 }
 
 // Get specific amount of log lines for application name from main map with ring buffers
-func getFromStorage(name string, lines int) string {
+func getFromStorage(name string, lines int) (string, error) {
 	mu.Lock()
 	defer mu.Unlock()
 	currentRing, ok := logStorage[name]
 	if !ok {
-		return fmt.Sprintf("Could not find logs for project '%s'", name)
+		return "", fmt.Errorf("Could not find logs for project '%s'", name)
 	}
 	var data string
 	getLine := func(line interface{}) {
@@ -59,7 +61,7 @@ func getFromStorage(name string, lines int) string {
 	}
 
 	currentRing.Next().Do(getLine)
-	return data
+	return data, nil
 }
 
 func RingBufferHandler(bufferSize int, webServicePort int) *Handler {
@@ -75,9 +77,6 @@ func RingBufferHandler(bufferSize int, webServicePort int) *Handler {
 
 // Main loop for this handler, each log line will be sended to drain (if DrainURI specified) and copied to log storage
 func (h *Handler) ringBufferLoop() {
-	var err error
-	var projectName string
-	var message string
 	for {
 		m := h.Get()
 		if m == nil {
@@ -86,8 +85,8 @@ func (h *Handler) ringBufferLoop() {
 		if h.DrainURI != "" {
 			drain.SendToDrain(m.String(), h.DrainURI)
 		}
-		message = m.String()
-		projectName, err = getProjectName(message)
+		message := m.String()
+		projectName, err := getProjectName(message)
 		if err != nil {
 			projectName = "unknown"
 			message = fmt.Sprintln(err)
@@ -130,20 +129,18 @@ func httpHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	getFromStorage(match[1], logLines)
-
+	data, err := getFromStorage(match[1], logLines)
 	if err != nil {
 		fmt.Fprintln(w, err)
 	} else {
-		fmt.Fprint(w, match[1])
+		fmt.Fprint(w, data)
 	}
 }
 
 // Start web service which serve controller request for get and post logs
 func startWebService(port int) {
 	http.HandleFunc("/", httpHandler)
-	err := http.ListenAndServe(fmt.Sprintf(":%d", port), nil)
-	if err != nil {
+	if err := http.ListenAndServe(fmt.Sprintf(":%d", port), nil); err != nil {
 		log.Println(err)
 	}
 }
