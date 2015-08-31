@@ -146,6 +146,8 @@ func startDefaultServices(b backend.Backend, stateless bool, wg *sync.WaitGroup,
 		b.Start([]string{"logger"}, wg, out, err)
 		wg.Wait()
 	}
+	b.Start([]string{"stateless-logger"}, wg, out, err)
+	wg.Wait()
 	b.Start([]string{"logspout"}, wg, out, err)
 	wg.Wait()
 
@@ -320,7 +322,7 @@ func installDefaultServices(b backend.Backend, stateless bool, wg *sync.WaitGrou
 
 	fmt.Fprintln(out, "Logging subsystem...")
 	if stateless {
-		b.Create([]string{"logspout"}, wg, out, err)
+		b.Create([]string{"stateless-logger", "logspout"}, wg, out, err)
 	} else {
 		b.Create([]string{"logger", "logspout"}, wg, out, err)
 	}
