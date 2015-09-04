@@ -218,28 +218,6 @@ class App(UuidAuditedModel):
             return '' if container_type == 'cmd' else 'start {}'.format(container_type)
 
     def log(self, message):
-        if self._get_logging_mode() == 'standard':
-            self.log_to_fs(message)
-        else:
-            self.log_to_logger(message)
-
-    @staticmethod
-    def format_log_message(message):
-        return "{} deis[api]: {}\n".format(
-            time.strftime(settings.DEIS_DATETIME_FORMAT), message)
-
-    def log_to_fs(self, message):
-        """Logs a message to the application's log file.
-
-        This is a workaround for how Django interacts with Python's logging module. Each app
-        needs its own FileHandler instance so it can write to its own log file. That won't work in
-        Django's case because logging is set up before you run the server and it disables all
-        existing logging configurations.
-        """
-        with open(os.path.join(settings.DEIS_LOG_DIR, self.id + '.log'), 'a') as f:
-            f.write(self.format_log_message(message).encode('utf-8'))
-
-    def log_to_logger(self, message):
         try:
             host = self._get_etcd_client().get('/deis/logs/host').value
             url = 'http://{}:{}/{}/'.format(host,
@@ -250,6 +228,11 @@ class App(UuidAuditedModel):
         except Exception as e:
             logger.error(
                 'Unable to send logs to logger due error: {}'.format(e))
+
+    @staticmethod
+    def format_log_message(message):
+        return "{} deis[api]: {}\n".format(
+            time.strftime(settings.DEIS_DATETIME_FORMAT), message)
 
     def create(self, *args, **kwargs):
         """Create a new application with an initial config and release"""
@@ -559,21 +542,7 @@ class App(UuidAuditedModel):
         except etcd.EtcdException:
             return 'standard'
 
-    def logs_from_fs(self, log_lines):
-        """Return aggregated log data for this application."""
-        path = os.path.join(settings.DEIS_LOG_DIR, self.id + '.log')
-        if not os.path.exists(path):
-            raise EnvironmentError('Could not locate logs')
-        data = subprocess.check_output(['tail', '-n', log_lines, path])
-        return data
-
     def logs(self, log_lines=str(settings.LOG_LINES)):
-        if self._get_logging_mode() == 'standard':
-            return self.logs_from_fs(log_lines)
-        else:
-            return self._get_logs_from_logger(log_lines)
-
-    def _get_logs_from_logger(self, log_lines):
         try:
             host = self._get_etcd_client().get('/deis/logs/host').value
             url = 'http://{}:{}/{}/{}/'.format(host, 8088, self.id, log_lines)
