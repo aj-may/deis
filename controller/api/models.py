@@ -175,8 +175,6 @@ class App(UuidAuditedModel):
                                       validate_reserved_names])
     structure = JSONField(default={}, blank=True, validators=[validate_app_structure])
 
-    _etcd_client = None
-
     class Meta:
         permissions = (('use_app', 'Can use app'),)
 
@@ -219,7 +217,7 @@ class App(UuidAuditedModel):
 
     def log(self, message):
         try:
-            host = self._get_etcd_client().get('/deis/logs/host').value
+            host = settings.LOGGER_HOST
             url = 'http://{}:{}/{}/'.format(host,
                                             8088,
                                             self.id)
@@ -524,27 +522,9 @@ class App(UuidAuditedModel):
 
         self.scale(user, structure)
 
-    def _get_etcd_client(self):
-        if self._etcd_client is None:
-            try:
-                self._etcd_client = etcd.Client(host=settings.ETCD_HOST,
-                                                port=int(settings.ETCD_PORT))
-            except etcd.EtcdException:
-                logger.log(logging.WARNING,
-                           'Cannot synchronize with etcd cluster')
-        return self._etcd_client
-
-    def _get_logging_mode(self):
-        try:
-            return self._get_etcd_client().get('/deis/logs/handlertype').value
-        except KeyError:
-            return 'standard'
-        except etcd.EtcdException:
-            return 'standard'
-
     def logs(self, log_lines=str(settings.LOG_LINES)):
         try:
-            host = self._get_etcd_client().get('/deis/logs/host').value
+            host = settings.LOGGER_HOST
             url = 'http://{}:{}/{}/{}/'.format(host, 8088, self.id, log_lines)
             r = requests.get(url)
             return r.content
